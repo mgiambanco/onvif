@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd:*)",
+      "Bash(dotnet package:*)",
+      "Read(//c/Users/mario/.nuget/packages/sharponvifclient.devicemgmt/0.9.1/lib/**)",
+      "Read(//c/Users/mario/.nuget/packages/sharponvifclient.devicemgmt/**)",
+      "Bash(find ~/.nuget/packages/sharponvifclient.devicemgmt -name *.xml)",
+      "Bash(powershell -Command \"\n\\\\$paths = @\\(\n    'C:/Users/mario/.nuget/packages/sharponvifcommon/0.9.1/lib/net8.0/SharpOnvifCommon.dll',\n    'C:/Users/mario/.nuget/packages/sharponvifclient/0.9.1/lib/net8.0/SharpOnvifClient.dll'\n\\)\nforeach \\(\\\\$p in \\\\$paths\\) {\n    if \\(Test-Path \\\\$p\\) {\n        \\\\$asm = [System.Reflection.Assembly]::LoadFile\\(\\\\$p\\)\n        Write-Host \\\\\"=== \\\\$p ===\\\\\"\n        \\\\$asm.GetTypes\\(\\) | ForEach-Object { \\\\$_.FullName }\n    }\n}\" 2>&1)",
+      "Read(//tmp/**)",
+      "Bash(dotnet run:*)",
+      "Read(//d/nvr/$APPDATA/OvifViewer/**)",
+      "Read(//d/nvr/$APPDATA/OvifViewer/logs/**)",
+      "Bash(dotnet build:*)",
+      "Bash(find:*)",
+      "Bash(ilspycmd:*)",
+      "Bash(dotnet tool:*)",
+      "Bash(Get-Content \"C:/Users/mario/AppData/Roaming/OvifViewer/logs/app-20260323.log\" | Select-Object -Last 20)"
+    ]
+  }
+}
