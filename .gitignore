@@ -70,6 +70,7 @@ artifacts/
 
 # claude
 .claude/
+.claude/settings.local.json
 
 # ASP.NET Scaffolding
 ScaffoldingReadMe.txt
