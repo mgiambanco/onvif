@@ -22,6 +22,11 @@ public partial class MainForm : Form
     private MouseHook? _mouseHook;
     private CameraPanel? _fullScreenPanel;
     private bool _hasManualLayout;
+    private readonly System.Windows.Forms.Timer _layoutSaveTimer;
+    private Splitter _splitter = null!;
+    private Panel _expandStrip = null!;
+    private bool _sidebarCollapsed;
+    private CameraZoomPanel _zoomPanel = null!;
 
     public MainForm(
         ISettingsService settings,
@@ -104,17 +109,39 @@ public partial class MainForm : Form
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         };
 
-        var sidebarHeader = new Label
+        var collapseBtn = new Button
         {
-            Text      = "CAMERAS",
+            Text      = "◀",
+            Dock      = DockStyle.Right,
+            Width     = 24,
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = Color.FromArgb(130, 130, 130),
+            BackColor = Color.Transparent,
+            Font      = new Font("Segoe UI", 7f),
+            Cursor    = Cursors.Hand,
+        };
+        collapseBtn.FlatAppearance.BorderSize = 0;
+        collapseBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(50, 50, 50);
+        collapseBtn.Click += (_, _) => ToggleSidebar();
+
+        var sidebarHeader = new Panel
+        {
             Dock      = DockStyle.Top,
             Height    = 24,
-            ForeColor = Color.FromArgb(130, 130, 130),
             BackColor = Color.FromArgb(30, 30, 30),
+        };
+        var headerLabel = new Label
+        {
+            Text      = "CAMERAS",
+            Dock      = DockStyle.Fill,
+            ForeColor = Color.FromArgb(130, 130, 130),
+            BackColor = Color.Transparent,
             Font      = new Font("Segoe UI", 7.5f, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft,
             Padding   = new Padding(8, 0, 0, 0),
         };
+        sidebarHeader.Controls.Add(headerLabel);
+        sidebarHeader.Controls.Add(collapseBtn);
 
         _sidebar = new Panel
         {
@@ -125,7 +152,7 @@ public partial class MainForm : Form
         _sidebar.Controls.Add(_cameraList);
         _sidebar.Controls.Add(sidebarHeader);
 
-        var splitter = new Splitter
+        _splitter = new Splitter
         {
             Dock      = DockStyle.Left,
             Width     = 3,
@@ -134,10 +161,41 @@ public partial class MainForm : Form
             MinExtra  = 300,
         };
 
+        var expandBtn = new Button
+        {
+            Text      = "▶",
+            Dock      = DockStyle.Fill,
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = Color.FromArgb(130, 130, 130),
+            BackColor = Color.Transparent,
+            Font      = new Font("Segoe UI", 7f),
+            Cursor    = Cursors.Hand,
+        };
+        expandBtn.FlatAppearance.BorderSize = 0;
+        expandBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(50, 50, 50);
+        expandBtn.Click += (_, _) => ToggleSidebar();
+
+        _expandStrip = new Panel
+        {
+            Dock      = DockStyle.Left,
+            Width     = 20,
+            BackColor = Color.FromArgb(30, 30, 30),
+            Visible   = false,
+        };
+        _expandStrip.Controls.Add(expandBtn);
+
+        _zoomPanel = new CameraZoomPanel(_rtspService, _onvifService);
+
+        _cameraList.SelectedIndexChanged += OnCameraListSelectionChanged;
+
         Controls.Add(_canvas);
-        Controls.Add(splitter);
+        Controls.Add(_splitter);
+        Controls.Add(_expandStrip);
         Controls.Add(_sidebar);
         Controls.Add(_statusBar);
+
+        _layoutSaveTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _layoutSaveTimer.Tick += (_, _) => { _layoutSaveTimer.Stop(); _settings.Save(); };
 
         BuildMenu();
     }
@@ -145,6 +203,7 @@ public partial class MainForm : Form
     protected override async void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
+        _zoomPanel.Owner = this;  // set once — Owner requires handle to exist
         _mouseHook = new MouseHook(_panels, () => _fullScreenPanel, ToggleFullScreen, ExitFullScreen);
         await RestoreCameraPanelsAsync();
     }
@@ -177,7 +236,8 @@ public partial class MainForm : Form
         var panel = new CameraPanel(camera, _rtspService);
         panel.PanelRemoveRequested    += (_, _) => RemoveCameraPanel(camera.Id);
         panel.ToggleFullSizeRequested += (_, _) => ToggleFullScreen(panel);
-        panel.StatusChanged           += (text, state) => UpdateCameraListItem(camera.Id, text, state);
+        panel.ZoomRequested           += (_, _) => ShowInZoomPanel(camera);
+        panel.StatusChanged           += (text, state) => { UpdateCameraListItem(camera.Id, text, state); UpdateStatusBar(); };
         panel.LayoutChanged           += (_, _) => SavePanelLayout(panel);
 
         _canvas.Controls.Add(panel);
@@ -222,6 +282,27 @@ public partial class MainForm : Form
         UpdateStatusBar();
     }
 
+    private void SavePanelLayout(CameraPanel panel)
+    {
+        _hasManualLayout = true;
+
+        var layouts = _settings.Settings.PanelLayouts;
+        var existing = layouts.FirstOrDefault(l => l.CameraId == panel.Camera.Id);
+        if (existing == null)
+        {
+            existing = new CameraPanelLayout { CameraId = panel.Camera.Id };
+            layouts.Add(existing);
+        }
+        existing.X      = panel.Left;
+        existing.Y      = panel.Top;
+        existing.Width  = panel.Width;
+        existing.Height = panel.Height;
+        existing.ZOrder = _canvas.Controls.GetChildIndex(panel);
+
+        _layoutSaveTimer.Stop();
+        _layoutSaveTimer.Start();
+    }
+
     // ── Grid / full-screen ────────────────────────────────────────────────────
 
     private void TileAll()
@@ -261,7 +342,20 @@ public partial class MainForm : Form
     private void ExitFullScreen()
     {
         _fullScreenPanel = null;
-        TileAll();
+        if (_hasManualLayout)
+        {
+            foreach (var p in _panels.Values)
+            {
+                p.Visible = true;
+                var saved = _settings.Settings.PanelLayouts.FirstOrDefault(l => l.CameraId == p.Camera.Id);
+                if (saved != null)
+                    p.SetBounds(saved.X, saved.Y, saved.Width, saved.Height);
+            }
+        }
+        else
+        {
+            TileAll();
+        }
     }
 
     // ── Menu ──────────────────────────────────────────────────────────────────
@@ -275,9 +369,13 @@ public partial class MainForm : Form
         cameraMenu.DropDownItems.Add("Add Camera Manually…", null, OnAddManualClick);
         cameraMenu.DropDownItems.Add(new ToolStripSeparator());
         cameraMenu.DropDownItems.Add("Manage Cameras…", null, OnManageCamerasClick);
+        cameraMenu.DropDownItems.Add(new ToolStripSeparator());
+        cameraMenu.DropDownItems.Add("Export Camera Config…", null, OnExportCamerasClick);
+        cameraMenu.DropDownItems.Add("Import Camera Config…", null, OnImportCamerasClick);
 
         var viewMenu = new ToolStripMenuItem("View");
         viewMenu.DropDownItems.Add("Reconnect All", null, OnReconnectAllClick);
+        viewMenu.DropDownItems.Add("Reset Layout", null, OnResetLayoutClick);
 
         menu.Items.Add(cameraMenu);
         menu.Items.Add(viewMenu);
@@ -312,6 +410,59 @@ public partial class MainForm : Form
         form.ShowDialog(this);
     }
 
+    private void OnExportCamerasClick(object? sender, EventArgs e)
+    {
+        using var dlg = new SaveFileDialog
+        {
+            Title      = "Export Camera Config",
+            Filter     = "JSON files (*.json)|*.json",
+            FileName   = "cameras.json",
+            DefaultExt = "json",
+        };
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            _settings.ExportCameras(dlg.FileName);
+            MessageBox.Show(this,
+                $"Exported {_settings.Settings.Cameras.Count} camera(s) to:\n{dlg.FileName}\n\nNote: passwords are stored in plaintext in this file.",
+                "Export Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Export failed: {ex.Message}", "Error",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void OnImportCamerasClick(object? sender, EventArgs e)
+    {
+        using var dlg = new OpenFileDialog
+        {
+            Title  = "Import Camera Config",
+            Filter = "JSON files (*.json)|*.json",
+        };
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            var added = _settings.ImportCameras(dlg.FileName);
+            foreach (var cam in added)
+                _ = AddCameraPanelAsync(cam);
+
+            MessageBox.Show(this,
+                added.Count > 0
+                    ? $"Imported {added.Count} new camera(s)."
+                    : "No new cameras found (all IDs already exist).",
+                "Import Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Import failed: {ex.Message}", "Error",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     private void OnReconnectAllClick(object? sender, EventArgs e)
     {
         foreach (var panel in _panels.Values)
@@ -319,6 +470,63 @@ public partial class MainForm : Form
             panel.StopStream();
             panel.StartStream();
         }
+    }
+
+    private void ToggleSidebar()
+    {
+        _sidebarCollapsed = !_sidebarCollapsed;
+        _sidebar.Visible     = !_sidebarCollapsed;
+        _splitter.Visible    = !_sidebarCollapsed;
+        _expandStrip.Visible = _sidebarCollapsed;
+    }
+
+    private void ShowInZoomPanel(CameraConfig camera)
+    {
+        if (!_zoomPanel.Visible)
+        {
+            var screen = Screen.FromControl(this).WorkingArea;
+            int pw = _zoomPanel.Width;
+            int ph = _zoomPanel.Height;
+
+            // Prefer right of main window; fall back to left if it would go off-screen
+            int x = Right + 8;
+            if (x + pw > screen.Right)
+                x = Math.Max(screen.Left, Left - pw - 8);
+
+            int y = Top + (Height - ph) / 2;
+            y = Math.Max(screen.Top, Math.Min(screen.Bottom - ph, y));
+
+            _zoomPanel.Location = new Point(x, y);
+        }
+
+        _zoomPanel.Visible = true;
+        _zoomPanel.Activate();
+        _ = _zoomPanel.LoadCameraAsync(camera);
+    }
+
+    private void HideZoomPanel()
+    {
+        _zoomPanel.Clear();
+        _zoomPanel.Hide();
+        _cameraList.SelectedItems.Clear();
+    }
+
+    private void OnCameraListSelectionChanged(object? sender, EventArgs e)
+    {
+        if (_cameraList.SelectedItems.Count == 0) return;
+        var item = _cameraList.SelectedItems[0];
+        if (!Guid.TryParse(item.Name, out var id)) return;
+        if (!_panels.TryGetValue(id, out var panel)) return;
+        _cameraList.SelectedItems.Clear();   // deselect so repeated clicks work
+        ToggleFullScreen(panel);
+    }
+
+    private void OnResetLayoutClick(object? sender, EventArgs e)
+    {
+        _hasManualLayout = false;
+        _settings.Settings.PanelLayouts.Clear();
+        _settings.Save();
+        TileAll();
     }
 
     // ── Window state / close ──────────────────────────────────────────────────
@@ -332,6 +540,9 @@ public partial class MainForm : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         _mouseHook?.Dispose();
+        _layoutSaveTimer.Stop();
+        _layoutSaveTimer.Dispose();
+        _zoomPanel.Clear();
         SaveWindowState();
         _settings.Save();
 
@@ -350,7 +561,7 @@ public partial class MainForm : Form
         catch { ip = camera.DeviceServiceUrl; }
 
         var name = string.IsNullOrWhiteSpace(camera.DisplayName) ? ip : camera.DisplayName;
-        var item = new ListViewItem(name) { Tag = Color.FromArgb(255, 165, 0), ToolTipText = ip };
+        var item = new ListViewItem(name) { Tag = Color.FromArgb(255, 165, 0), ToolTipText = ip, Name = camera.Id.ToString() };
         item.SubItems.Add("Connecting…");
         _cameraList.Items.Add(item);
         _listItems[camera.Id] = item;
@@ -368,6 +579,11 @@ public partial class MainForm : Form
     private void UpdateCameraListItem(Guid cameraId, string text, StatusState state)
     {
         if (!_listItems.TryGetValue(cameraId, out var item)) return;
+
+        // Refresh display name in case it was populated after initial add
+        if (_panels.TryGetValue(cameraId, out var panel) &&
+            !string.IsNullOrWhiteSpace(panel.Camera.DisplayName))
+            item.Text = panel.Camera.DisplayName;
         var color = state switch
         {
             StatusState.Live       => Color.FromArgb(50, 205, 50),

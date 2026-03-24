@@ -45,7 +45,6 @@ public class CameraPanelOverlay : Form
         TransparencyKey = Color.Magenta;
         TopMost = false;
         StartPosition = FormStartPosition.Manual;
-        Opacity = 0; // start hidden
 
         BuildContextMenu();
         BuildResizeHandles();   // add before title bar so title bar is on top
@@ -65,6 +64,7 @@ public class CameraPanelOverlay : Form
             _owner.StopStream();
             _owner.StartStream();
         });
+        _contextMenu.Items.Add("Show in Zoom Panel", null, (_, _) => _owner.RequestZoom());
         _contextMenu.Items.Add(new ToolStripSeparator());
         _contextMenu.Items.Add("Remove Camera", null, (_, _) => _owner.RequestRemove());
     }
@@ -315,9 +315,7 @@ public class CameraPanelOverlay : Form
     public void SetOverlayVisible(bool visible)
     {
         if (InvokeRequired) { BeginInvoke(() => SetOverlayVisible(visible)); return; }
-        Opacity = visible ? 1.0 : 0.0;
-        // Always keep the status dot visible (at reduced opacity when hidden)
-        // — the dot shows through even when overlay is "hidden"
+        Visible = visible;
     }
 
     public void SyncBounds()

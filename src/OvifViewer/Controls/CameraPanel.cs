@@ -28,6 +28,7 @@ public class CameraPanel : UserControl
 
     public event EventHandler? PanelRemoveRequested;
     public event EventHandler? ToggleFullSizeRequested;
+    public event EventHandler? ZoomRequested;
     public event Action<string, StatusState>? StatusChanged;
     public event EventHandler? LayoutChanged;
 
@@ -91,7 +92,7 @@ public class CameraPanel : UserControl
             LayoutChanged?.Invoke(this, EventArgs.Empty);
         };
 
-        _overlay.Show();
+        _ = _overlay.Handle;  // force handle creation without showing (SetVisibleCore override blocks Show before SetParent)
         SetParent(_overlay.Handle, Handle);
         _overlay.SyncBounds();
 
@@ -129,6 +130,7 @@ public class CameraPanel : UserControl
 
     public void RequestRemove() => PanelRemoveRequested?.Invoke(this, EventArgs.Empty);
     public void ToggleFullSize() => ToggleFullSizeRequested?.Invoke(this, EventArgs.Empty);
+    public void RequestZoom()   => ZoomRequested?.Invoke(this, EventArgs.Empty);
 
     // ── Hover tracking ────────────────────────────────────────────────────────
 

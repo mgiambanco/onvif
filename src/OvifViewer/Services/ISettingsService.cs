@@ -8,4 +8,6 @@ public interface ISettingsService
     void Load();
     void Save();
     void SaveDebounced();
+    void ExportCameras(string path);
+    IReadOnlyList<CameraConfig> ImportCameras(string path);
 }
