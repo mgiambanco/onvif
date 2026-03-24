@@ -28,7 +28,8 @@ public class CameraSettingsForm : Form
 
         Text = $"Camera Settings — {camera.DisplayName}";
         Size = new Size(480, 370);
-        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MinimumSize = new Size(380, 320);
+        FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;

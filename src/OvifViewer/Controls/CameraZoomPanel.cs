@@ -294,7 +294,10 @@ public class CameraZoomPanel : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (e.CloseReason == CloseReason.UserClosing)
+        // Only intercept when the user closes the panel directly while it is visible.
+        // If the owner (MainForm) is closing, Visible will be false (Clear/Hide was
+        // already called) — let it close so it doesn't cancel the app exit.
+        if (e.CloseReason == CloseReason.UserClosing && Visible)
         {
             e.Cancel = true;
             Hide();

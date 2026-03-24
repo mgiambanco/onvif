@@ -27,6 +27,8 @@ public partial class MainForm : Form
     private Panel _expandStrip = null!;
     private bool _sidebarCollapsed;
     private CameraZoomPanel _zoomPanel = null!;
+    private int _presetCols;
+    private Button[] _presetButtons = [];
 
     public MainForm(
         ISettingsService settings,
@@ -85,8 +87,8 @@ public partial class MainForm : Form
             Font       = new Font("Segoe UI", 8.5f),
             OwnerDraw  = true,
         };
-        _cameraList.Columns.Add("Camera", 118);
-        _cameraList.Columns.Add("Status", 60);
+        _cameraList.Columns.Add("Camera", 96);
+        _cameraList.Columns.Add("IP", 82);
         _cameraList.DrawColumnHeader += (_, e) =>
         {
             e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(30, 30, 30)), e.Bounds);
@@ -187,8 +189,55 @@ public partial class MainForm : Form
         _zoomPanel = new CameraZoomPanel(_rtspService, _onvifService);
 
         _cameraList.SelectedIndexChanged += OnCameraListSelectionChanged;
+        _cameraList.MouseClick         += OnCameraListMouseClick;
 
-        Controls.Add(_canvas);
+        // ── Grid preset toolbar ───────────────────────────────────────────────
+        var gridToolbar = new Panel
+        {
+            Dock      = DockStyle.Top,
+            Height    = 30,
+            BackColor = Color.FromArgb(30, 30, 30),
+        };
+
+        (string Text, int Cols)[] presets =
+        [
+            ("Auto", 0), ("1×1", 1), ("2×2", 2), ("3×3", 3), ("4×4", 4),
+        ];
+
+        var presetBtns = new Button[presets.Length];
+        int bx = 8;
+        for (int i = 0; i < presets.Length; i++)
+        {
+            var (text, cols) = presets[i];
+            var btn = new Button
+            {
+                Text      = text,
+                Left      = bx,
+                Top       = 3,
+                Width     = 44,
+                Height    = 24,
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = Color.FromArgb(200, 200, 200),
+                BackColor = cols == 0 ? Color.FromArgb(60, 80, 120) : Color.FromArgb(45, 45, 45),
+                Font      = new Font("Segoe UI", 8f),
+                Cursor    = Cursors.Hand,
+                Tag       = cols,
+            };
+            btn.FlatAppearance.BorderColor       = Color.FromArgb(65, 65, 65);
+            btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(65, 65, 65);
+            int c = cols;
+            btn.Click += (_, _) => ApplyGridPreset(c);
+            gridToolbar.Controls.Add(btn);
+            presetBtns[i] = btn;
+            bx += btn.Width + 4;
+        }
+        _presetButtons = presetBtns;
+
+        var contentPanel = new Panel { Dock = DockStyle.Fill };
+        contentPanel.Controls.Add(_canvas);
+        contentPanel.Controls.Add(gridToolbar);
+
+        Controls.Add(contentPanel);
         Controls.Add(_splitter);
         Controls.Add(_expandStrip);
         Controls.Add(_sidebar);
@@ -310,7 +359,7 @@ public partial class MainForm : Form
         var panels = _panels.Values.ToList();
         if (panels.Count == 0) return;
 
-        int cols = (int)Math.Ceiling(Math.Sqrt(panels.Count));
+        int cols = _presetCols > 0 ? _presetCols : (int)Math.Ceiling(Math.Sqrt(panels.Count));
         int rows = (int)Math.Ceiling(panels.Count / (double)cols);
         int w = Math.Max(1, _canvas.ClientSize.Width / cols);
         int h = Math.Max(1, _canvas.ClientSize.Height / rows);
@@ -521,12 +570,85 @@ public partial class MainForm : Form
         ToggleFullScreen(panel);
     }
 
+    private void OnCameraListMouseClick(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Right) return;
+        var item = _cameraList.GetItemAt(e.X, e.Y);
+        if (item == null || !Guid.TryParse(item.Name, out var id)) return;
+        if (!_panels.TryGetValue(id, out var panel)) return;
+
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("Edit…",     null, (_, _) => EditCamera(panel.Camera));
+        menu.Items.Add("Reconnect", null, (_, _) => { panel.StopStream(); panel.StartStream(); });
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Remove",    null, (_, _) => RemoveCameraPanel(id));
+        menu.Show(_cameraList, e.Location);
+    }
+
+    private void EditCamera(CameraConfig camera)
+    {
+        using var form = new CameraSettingsForm(camera, _onvifService);
+        if (form.ShowDialog(this) != DialogResult.OK || form.Result == null) return;
+
+        var r = form.Result;
+        // Mutate in-place so the live CameraPanel reference stays valid
+        camera.DisplayName          = r.DisplayName;
+        camera.Username             = r.Username;
+        camera.EncryptedPassword    = r.EncryptedPassword;
+        camera.SelectedProfileToken = r.SelectedProfileToken;
+        camera.PtzEnabled           = r.PtzEnabled;
+        camera.AutoConnect          = r.AutoConnect;
+        camera.RtspUri              = string.Empty;   // clear cache — re-fetched on connect
+
+        _settings.Save();
+
+        if (_listItems.TryGetValue(camera.Id, out var item))
+        {
+            item.Text = string.IsNullOrWhiteSpace(camera.DisplayName)
+                ? camera.DeviceServiceUrl : camera.DisplayName;
+            _cameraList.Invalidate();
+        }
+
+        if (_panels.TryGetValue(camera.Id, out var panel))
+        {
+            panel.StopStream();
+            _ = ReconnectPanelAsync(panel, camera);
+        }
+    }
+
+    private async Task ReconnectPanelAsync(CameraPanel panel, CameraConfig camera)
+    {
+        try
+        {
+            camera.RtspUri = await _onvifService.GetStreamUriAsync(camera);
+            _settings.Save();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Could not fetch RTSP URI for {Name} after edit", camera.DisplayName);
+        }
+        if (_panels.ContainsKey(camera.Id))
+            panel.StartStream();
+    }
+
+    private void ApplyGridPreset(int cols)
+    {
+        _presetCols      = cols;
+        _hasManualLayout = false;
+
+        foreach (var b in _presetButtons)
+            b.BackColor = b.Tag is int bc && bc == cols
+                ? Color.FromArgb(60, 80, 120)
+                : Color.FromArgb(45, 45, 45);
+
+        TileAll();
+    }
+
     private void OnResetLayoutClick(object? sender, EventArgs e)
     {
-        _hasManualLayout = false;
         _settings.Settings.PanelLayouts.Clear();
         _settings.Save();
-        TileAll();
+        ApplyGridPreset(0);
     }
 
     // ── Window state / close ──────────────────────────────────────────────────
@@ -561,8 +683,8 @@ public partial class MainForm : Form
         catch { ip = camera.DeviceServiceUrl; }
 
         var name = string.IsNullOrWhiteSpace(camera.DisplayName) ? ip : camera.DisplayName;
-        var item = new ListViewItem(name) { Tag = Color.FromArgb(255, 165, 0), ToolTipText = ip, Name = camera.Id.ToString() };
-        item.SubItems.Add("Connecting…");
+        var item = new ListViewItem(name) { Tag = Color.FromArgb(255, 165, 0), Name = camera.Id.ToString() };
+        item.SubItems.Add(ip);
         _cameraList.Items.Add(item);
         _listItems[camera.Id] = item;
     }
@@ -592,7 +714,6 @@ public partial class MainForm : Form
             _                      => Color.FromArgb(120, 120, 120),
         };
         item.Tag = color;
-        item.SubItems[1].Text = text;
         _cameraList.Invalidate();
     }
 

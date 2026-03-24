@@ -75,9 +75,15 @@ public class ManageCamerasForm : Form
         using var form = new CameraSettingsForm(cam, _onvif);
         if (form.ShowDialog(this) != DialogResult.OK || form.Result == null) return;
 
-        var idx = _settings.Settings.Cameras.IndexOf(cam);
-        if (idx >= 0)
-            _settings.Settings.Cameras[idx] = form.Result;
+        // Mutate in-place so live CameraPanel references stay valid
+        var r = form.Result;
+        cam.DisplayName          = r.DisplayName;
+        cam.Username             = r.Username;
+        cam.EncryptedPassword    = r.EncryptedPassword;
+        cam.SelectedProfileToken = r.SelectedProfileToken;
+        cam.PtzEnabled           = r.PtzEnabled;
+        cam.AutoConnect          = r.AutoConnect;
+        cam.RtspUri              = string.Empty;   // clear cache
 
         _settings.Save();
         RefreshList();
