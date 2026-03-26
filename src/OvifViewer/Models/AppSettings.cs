@@ -4,6 +4,7 @@ public class AppSettings
 {
     public List<CameraConfig> Cameras { get; set; } = [];
     public List<CameraPanelLayout> PanelLayouts { get; set; } = [];
+    public int GridPresetCols { get; set; } = 0;
     public string Theme { get; set; } = "Dark";
     public int MainWindowX { get; set; } = 100;
     public int MainWindowY { get; set; } = 100;

@@ -233,6 +233,13 @@ public partial class MainForm : Form
         }
         _presetButtons = presetBtns;
 
+        // Restore saved preset (updates _presetCols and button highlight before panels are added)
+        _presetCols = _settings.Settings.GridPresetCols;
+        foreach (var b in _presetButtons)
+            b.BackColor = b.Tag is int bc && bc == _presetCols
+                ? Color.FromArgb(60, 80, 120)
+                : Color.FromArgb(45, 45, 45);
+
         var contentPanel = new Panel { Dock = DockStyle.Fill };
         contentPanel.Controls.Add(_canvas);
         contentPanel.Controls.Add(gridToolbar);
@@ -661,20 +668,22 @@ public partial class MainForm : Form
         _presetCols      = cols;
         _hasManualLayout = false;
 
+        // Clear saved per-panel positions so they don't override the preset on next load
+        _settings.Settings.PanelLayouts.Clear();
+        _settings.Settings.GridPresetCols = cols;
+
         foreach (var b in _presetButtons)
             b.BackColor = b.Tag is int bc && bc == cols
                 ? Color.FromArgb(60, 80, 120)
                 : Color.FromArgb(45, 45, 45);
 
+        _layoutSaveTimer.Stop();
+        _layoutSaveTimer.Start();
+
         TileAll();
     }
 
-    private void OnResetLayoutClick(object? sender, EventArgs e)
-    {
-        _settings.Settings.PanelLayouts.Clear();
-        _settings.Save();
-        ApplyGridPreset(0);
-    }
+    private void OnResetLayoutClick(object? sender, EventArgs e) => ApplyGridPreset(0);
 
     // ── Window state / close ──────────────────────────────────────────────────
 
