@@ -261,7 +261,21 @@ public partial class MainForm : Form
 
     private async Task RestoreCameraPanelsAsync()
     {
-        foreach (var cam in _settings.Settings.Cameras.Where(c => c.AutoConnect))
+        var cameras = _settings.Settings.Cameras.Where(c => c.AutoConnect).ToList();
+
+        // Fetch all missing RTSP URIs in parallel — the only slow part
+        await Task.WhenAll(cameras
+            .Where(c => string.IsNullOrEmpty(c.RtspUri))
+            .Select(async c =>
+            {
+                try   { c.RtspUri = await _onvifService.GetStreamUriAsync(c); }
+                catch (Exception ex) { Log.Warning(ex, "Could not fetch RTSP URI for {Name}", c.DisplayName); }
+            }));
+
+        _settings.Save();
+
+        // Add panels on the UI thread (fast — URIs already resolved above)
+        foreach (var cam in cameras)
             await AddCameraPanelAsync(cam);
     }
 
@@ -282,12 +296,23 @@ public partial class MainForm : Form
             }
         }
 
-        var panel = new CameraPanel(camera, _rtspService);
+        var panel = new CameraPanel(camera, _rtspService, _onvifService);
         panel.PanelRemoveRequested    += (_, _) => RemoveCameraPanel(camera.Id);
         panel.ToggleFullSizeRequested += (_, _) => ToggleFullScreen(panel);
         panel.ZoomRequested           += (_, _) => ShowInZoomPanel(camera);
         panel.StatusChanged           += (text, state) => { UpdateCameraListItem(camera.Id, text, state); UpdateStatusBar(); };
         panel.LayoutChanged           += (_, _) => SavePanelLayout(panel);
+        panel.MuteChanged             += (_, _) => _settings.Save();
+        panel.ProfileChangeRequested  += async token =>
+        {
+            panel.StopStream();
+            camera.SelectedProfileToken = token;
+            camera.RtspUri = string.Empty;
+            try { camera.RtspUri = await _onvifService.GetStreamUriAsync(camera); }
+            catch (Exception ex) { Log.Warning(ex, "Profile switch failed for {Name}", camera.DisplayName); }
+            _settings.Save();
+            if (_panels.ContainsKey(camera.Id)) panel.StartStream();
+        };
 
         _canvas.Controls.Add(panel);
         _panels[camera.Id] = panel;

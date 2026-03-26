@@ -3,8 +3,6 @@ using LibVLCSharp.Shared;
 using LibVLCSharp.WinForms;
 using OvifViewer.Models;
 using OvifViewer.Services;
-using Polly;
-using Polly.Retry;
 using Serilog;
 
 namespace OvifViewer.Controls;
@@ -20,10 +18,12 @@ public class CameraPanel : UserControl
     private static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
 
     private readonly IRtspStreamService _rtspService;
+    private readonly IOnvifService _onvifService;
     private VideoView? _videoView;
     private MediaPlayer? _player;
     private CameraPanelOverlay? _overlay;
-    private AsyncRetryPolicy? _reconnectPolicy;
+    private CancellationTokenSource? _streamCts;
+    private int _retryCount;
     private readonly System.Windows.Forms.Timer _hoverTimer;
 
     public event EventHandler? PanelRemoveRequested;
@@ -31,6 +31,8 @@ public class CameraPanel : UserControl
     public event EventHandler? ZoomRequested;
     public event Action<string, StatusState>? StatusChanged;
     public event EventHandler? LayoutChanged;
+    public event Action<string>? ProfileChangeRequested;
+    public event EventHandler? MuteChanged;
 
     public CameraConfig Camera { get; private set; }
     public bool IsStreaming { get; private set; }
@@ -38,10 +40,11 @@ public class CameraPanel : UserControl
     public string CurrentStatus { get; private set; } = "Connecting…";
     public StatusState CurrentState { get; private set; } = StatusState.Connecting;
 
-    public CameraPanel(CameraConfig camera, IRtspStreamService rtspService)
+    public CameraPanel(CameraConfig camera, IRtspStreamService rtspService, IOnvifService onvifService)
     {
         Camera = camera;
         _rtspService = rtspService;
+        _onvifService = onvifService;
 
         DoubleBuffered = true;
         BackColor = Color.FromArgb(18, 18, 18);
@@ -49,8 +52,6 @@ public class CameraPanel : UserControl
         _hoverTimer = new System.Windows.Forms.Timer { Interval = HoverCheckInterval };
         _hoverTimer.Tick += OnHoverTick;
         _hoverTimer.Start();
-
-        BuildReconnectPolicy();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -60,7 +61,7 @@ public class CameraPanel : UserControl
         _videoView = new VideoView { Dock = DockStyle.Fill, BackColor = Color.Black };
         Controls.Add(_videoView);
 
-        _overlay = new CameraPanelOverlay(this);
+        _overlay = new CameraPanelOverlay(this, _onvifService);
 
         _overlay.MoveRequested += (dx, dy) =>
         {
@@ -113,24 +114,55 @@ public class CameraPanel : UserControl
 
         if (_videoView == null) return;
 
+        _streamCts?.Cancel();
+        _streamCts = new CancellationTokenSource();
+        _retryCount = 0;
+
         _player = new MediaPlayer(((RtspStreamService)_rtspService).LibVlc);
         _player.Hwnd = _videoView.Handle;
 
         WirePlayerEvents();
-        _ = Task.Run(() => _reconnectPolicy!.ExecuteAsync(ConnectAsync));
+        ConnectOnce();
     }
 
     public void StopStream()
     {
+        _streamCts?.Cancel();
         IsStreaming = false;
         if (_player != null)
             _rtspService.Stop(_player);
         NotifyStatus("Stopped", StatusState.Idle);
     }
 
-    public void RequestRemove() => PanelRemoveRequested?.Invoke(this, EventArgs.Empty);
-    public void ToggleFullSize() => ToggleFullSizeRequested?.Invoke(this, EventArgs.Empty);
-    public void RequestZoom()   => ZoomRequested?.Invoke(this, EventArgs.Empty);
+    public void RequestRemove()            => PanelRemoveRequested?.Invoke(this, EventArgs.Empty);
+    public void ToggleFullSize()           => ToggleFullSizeRequested?.Invoke(this, EventArgs.Empty);
+    public void RequestZoom()              => ZoomRequested?.Invoke(this, EventArgs.Empty);
+    public void RequestProfileChange(string token) => ProfileChangeRequested?.Invoke(token);
+
+    // ── Audio ─────────────────────────────────────────────────────────────────
+
+    public bool IsMuted => _player?.Mute ?? Camera.Muted;
+    public int Volume   => _player?.Volume ?? 100;
+
+    public void ToggleMute()
+    {
+        if (_player == null) return;
+        _player.Mute  = !_player.Mute;
+        Camera.Muted  = _player.Mute;
+        MuteChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void SetVolume(int volume)
+    {
+        if (_player == null) return;
+        _player.Volume = Math.Clamp(volume, 0, 200);
+        if (volume > 0 && _player.Mute)
+        {
+            _player.Mute = false;
+            Camera.Muted = false;
+            MuteChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
 
     // ── Hover tracking ────────────────────────────────────────────────────────
 
@@ -168,24 +200,26 @@ public class CameraPanel : UserControl
 
     // ── Reconnect logic ───────────────────────────────────────────────────────
 
-    private void BuildReconnectPolicy()
+    private void ConnectOnce()
     {
-        _reconnectPolicy = Policy
-            .Handle<Exception>()
-            .WaitAndRetryForeverAsync(
-                attempt => TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, attempt))),
-                (ex, delay) =>
-                {
-                    Log.Warning("Stream {Name} failed — retry in {Delay}s: {Msg}",
-                        Camera.DisplayName, delay.TotalSeconds, ex.Message);
-                    SafeInvoke(() => _overlay?.UpdateStatus("Reconnecting…", StatusState.Connecting));
-                });
+        if (_streamCts?.IsCancellationRequested != false || _player == null) return;
+        _rtspService.Play(_player, Camera.RtspUri, Camera.Username, Camera.GetPassword());
     }
 
-    private Task ConnectAsync()
+    private void ScheduleReconnect()
     {
-        _rtspService.Play(_player!, Camera.RtspUri, Camera.Username, Camera.GetPassword());
-        return Task.CompletedTask;
+        var ct = _streamCts?.Token ?? CancellationToken.None;
+        if (ct.IsCancellationRequested) return;
+
+        _retryCount++;
+        var delay = TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, _retryCount)));
+        Log.Warning("Stream {Name} ended — reconnecting in {Delay:0}s", Camera.DisplayName, delay.TotalSeconds);
+
+        _ = Task.Delay(delay, ct).ContinueWith(t =>
+        {
+            if (t.Status != TaskStatus.RanToCompletion) return;
+            SafeInvoke(ConnectOnce);
+        });
     }
 
     private void WirePlayerEvents()
@@ -196,18 +230,28 @@ public class CameraPanel : UserControl
         {
             IsStreaming = false;
             Log.Error("Stream error on {Name}", Camera.DisplayName);
-            SafeInvoke(() => NotifyStatus("Error", StatusState.Error));
+            SafeInvoke(() =>
+            {
+                NotifyStatus("Error", StatusState.Error);
+                ScheduleReconnect();
+            });
         };
 
         _player.EndReached += (_, _) =>
         {
             IsStreaming = false;
-            SafeInvoke(() => NotifyStatus("Ended", StatusState.Idle));
+            SafeInvoke(() =>
+            {
+                NotifyStatus("Reconnecting…", StatusState.Connecting);
+                ScheduleReconnect();
+            });
         };
 
         _player.Playing += (_, _) =>
         {
-            IsStreaming = true;
+            IsStreaming  = true;
+            _retryCount  = 0;
+            _player.Mute = Camera.Muted;
             SafeInvoke(() => NotifyStatus("Live", StatusState.Live));
         };
 

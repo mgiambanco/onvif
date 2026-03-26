@@ -1,6 +1,6 @@
 # OvifViewer
 
-A Windows desktop NVR viewer for ONVIF-compatible IP cameras. Displays multiple live RTSP streams in a resizable, draggable grid with PTZ controls, camera discovery, and persistent layout.
+A Windows desktop NVR viewer for ONVIF-compatible IP cameras. Displays multiple live RTSP streams in a resizable, draggable grid with per-camera audio control, stream profile switching, PTZ controls, camera discovery, and persistent layout.
 
 ## Requirements
 
@@ -49,15 +49,37 @@ A Windows desktop NVR viewer for ONVIF-compatible IP cameras. Displays multiple 
 - Click again or press Escape to return to the previous layout
 - Double-click a panel's title bar has the same effect
 
-**Per-panel overlay** (appears on hover)
-- Title bar with camera name, drag-to-move, close button
-- Resize handles on the right edge, bottom edge, and corners
-- Right-click menu: Reconnect, Show in Zoom Panel, Remove Camera
-- Connection status dot (bottom-right): orange = connecting, green = live, red = error
+### Per-panel overlay (appears on hover)
+
+The overlay title bar shows the camera name on the left and four icon buttons on the right:
+
+| Button | Action |
+|--------|--------|
+| 🔊 / 🔇 | Opens the **audio menu** |
+| ▤ | Opens the **stream menu** |
+| ⋮ | Opens the **actions menu** |
+| ✕ | Removes the camera panel |
+
+**Audio menu** — mute/unmute toggle and a volume slider (0–200%). Cameras start muted by default; mute state persists across sessions.
+
+**Stream menu** — lists all ONVIF media profiles for the camera (name, resolution, encoding). The active profile is checkmarked. Selecting a different profile fetches a new RTSP URI and restarts the stream immediately. Profiles are loaded from the camera on first hover.
+
+**Actions menu** — Reconnect, Show in Zoom Panel, Remove Camera. Also accessible by right-clicking the title bar.
+
+**Status indicator** — small dot in the bottom-right corner of each panel: orange = connecting, green = live, red = error.
+
+**Resize handles** — thin hit-targets on the right edge, bottom edge, and corners.
+
+### Audio Control
+
+- Each camera panel has independent mute and volume controls
+- Cameras are muted by default on first launch
+- Mute state and (un)mute changes are saved immediately to settings and restored on next launch
+- Volume can be set from 0 to 200% per camera
 
 ### Zoom Panel
 
-- Right-click a camera panel overlay → *Show in Zoom Panel*, or click *Show in Zoom Panel* from the overlay context menu
+- Accessible via the ▤ stream menu → *Show in Zoom Panel* or the ⋮ actions menu
 - Opens a floating, borderless window positioned next to the main window
 - Drag via the title bar; resize via the grip in the bottom-right corner
 - Streams the camera independently of the grid panel
@@ -71,7 +93,8 @@ A Windows desktop NVR viewer for ONVIF-compatible IP cameras. Displays multiple 
 
 ### Auto-Reconnect
 
-- Each camera stream retries automatically on error using an exponential back-off (up to 30 s between attempts) via Polly
+- Each camera stream restarts automatically on error or stream end using exponential back-off (2 s, 4 s, 8 s … capped at 30 s between attempts)
+- Back-off counter resets to zero after each successful connection
 - *View → Reconnect All* manually stops and restarts every stream
 
 ### Sidebar
@@ -89,7 +112,7 @@ Logs are written to `%AppData%\OvifViewer\logs\` with daily rotation and a 7-day
 ## Building
 
 ```
-dotnet build src/OvifViewer/OvifViewer.csproj -c Release
+dotnet build OvifViewer.slnx -c Release
 ```
 
 Output: `src/OvifViewer/bin/Release/net9.0-windows/OvifViewer.exe`
@@ -97,9 +120,8 @@ Output: `src/OvifViewer/bin/Release/net9.0-windows/OvifViewer.exe`
 ## Dependencies
 
 | Package | Purpose |
-|---|---|
+|---------|---------|
 | LibVLCSharp.WinForms + VideoLAN.LibVLC.Windows | RTSP stream rendering |
 | SharpOnvifClient | ONVIF device/media/PTZ operations |
-| Polly | Retry policy for stream reconnect |
 | Serilog | Structured logging to rolling file |
 | Microsoft.Extensions.DependencyInjection | Service container |

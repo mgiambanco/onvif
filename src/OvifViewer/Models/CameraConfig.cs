@@ -24,6 +24,7 @@ public class CameraConfig
 
     public bool PtzEnabled { get; set; }
     public bool AutoConnect { get; set; } = true;
+    public bool Muted { get; set; } = true;
 
     // ── Credential helpers ────────────────────────────────────────────────────
 

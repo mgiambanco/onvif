@@ -9,6 +9,9 @@ public enum StatusState { Connecting, Live, Idle, Error }
 /// Borderless overlay form parented to CameraPanel via Win32 SetParent.
 /// Auto-hides when the cursor leaves the panel. Forwards title-bar drags
 /// back to CameraPanel so the panel moves correctly.
+///
+/// Title-bar layout (right to left):  [✕] [⋮] [▤ stream] [🔊 audio] | [Camera Name ...]
+/// Each icon button opens a dropdown menu.
 /// </summary>
 public class CameraPanelOverlay : Form
 {
@@ -20,11 +23,15 @@ public class CameraPanelOverlay : Form
     private Label _statusLabel = null!;
     private PictureBox _statusDot = null!;
     private Panel _ptzPanel = null!;
-    private ContextMenuStrip _contextMenu = null!;
+    private Button _audioBtn = null!;
+    private Button _streamBtn = null!;
+    private ContextMenuStrip _actionsMenu = null!;
     private readonly List<(ResizeEdge Edge, Panel Handle)> _resizeHandles = [];
 
+    private List<CameraProfile> _profiles = [];
+    private bool _profilesLoaded;
+
     private const int TitleBarHeight = 30;
-    private StatusState _currentState = StatusState.Connecting;
 
     // Title-bar drag state
     private Point _titleDragStart;
@@ -40,14 +47,14 @@ public class CameraPanelOverlay : Form
         _onvifService = onvifService;
 
         FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = false;
-        BackColor = Color.Magenta;
+        ShowInTaskbar   = false;
+        BackColor       = Color.Magenta;
         TransparencyKey = Color.Magenta;
-        TopMost = false;
-        StartPosition = FormStartPosition.Manual;
+        TopMost         = false;
+        StartPosition   = FormStartPosition.Manual;
 
-        BuildContextMenu();
-        BuildResizeHandles();   // add before title bar so title bar is on top
+        BuildActionsMenu();
+        BuildResizeHandles();   // before title bar so title bar z-order is on top
         BuildTitleBar();
         BuildStatusBar();
         BuildPtzPanel();
@@ -55,74 +62,178 @@ public class CameraPanelOverlay : Form
 
     // ── Build UI ──────────────────────────────────────────────────────────────
 
-    private void BuildContextMenu()
+    private void BuildActionsMenu()
     {
-        _contextMenu = new ContextMenuStrip();
-
-        _contextMenu.Items.Add("Reconnect", null, (_, _) =>
-        {
-            _owner.StopStream();
-            _owner.StartStream();
-        });
-        _contextMenu.Items.Add("Show in Zoom Panel", null, (_, _) => _owner.RequestZoom());
-        _contextMenu.Items.Add(new ToolStripSeparator());
-        _contextMenu.Items.Add("Remove Camera", null, (_, _) => _owner.RequestRemove());
+        _actionsMenu = new ContextMenuStrip();
+        _actionsMenu.Items.Add("Reconnect",        null, (_, _) => { _owner.StopStream(); _owner.StartStream(); });
+        _actionsMenu.Items.Add("Show in Zoom Panel", null, (_, _) => _owner.RequestZoom());
+        _actionsMenu.Items.Add(new ToolStripSeparator());
+        _actionsMenu.Items.Add("Remove Camera",    null, (_, _) => _owner.RequestRemove());
     }
 
     private void BuildTitleBar()
     {
         _titleBar = new Panel
         {
-            Dock = DockStyle.Top,
-            Height = TitleBarHeight,
+            Dock      = DockStyle.Top,
+            Height    = TitleBarHeight,
             BackColor = Color.FromArgb(220, 22, 22, 22),
-            Cursor = Cursors.SizeAll,
+            Cursor    = Cursors.SizeAll,
         };
 
         _titleLabel = new Label
         {
-            AutoSize = false,
-            Dock = DockStyle.Fill,
+            AutoSize  = false,
+            Dock      = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.White,
             BackColor = Color.Transparent,
-            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
-            Padding = new Padding(8, 0, 0, 0),
-            Text = _owner.Camera.DisplayName,
-            Cursor = Cursors.SizeAll,
+            Font      = new Font("Segoe UI", 9f),
+            Padding   = new Padding(8, 0, 0, 0),
+            Text      = _owner.Camera.DisplayName,
+            Cursor    = Cursors.SizeAll,
         };
 
+        // Close — direct action, no menu
         var closeBtn = MakeIconButton("✕", Color.FromArgb(196, 43, 28));
         closeBtn.Click += (_, _) => _owner.RequestRemove();
 
-        var menuBtn = MakeIconButton("⋮", Color.Transparent);
-        menuBtn.Click += (_, e) =>
-            _contextMenu.Show(menuBtn, new Point(0, menuBtn.Height));
+        // Actions menu  ⋮
+        var actionsBtn = MakeIconButton("⋮", Color.Transparent);
+        actionsBtn.Click += (_, _) => _actionsMenu.Show(actionsBtn, new Point(0, actionsBtn.Height));
 
-        _titleBar.Controls.Add(_titleLabel);
-        _titleBar.Controls.Add(closeBtn);
-        _titleBar.Controls.Add(menuBtn);
+        // Stream / profile selector  ▤
+        _streamBtn = MakeIconButton("▤", Color.Transparent);
+        _streamBtn.Click += (_, _) => ShowStreamMenu();
 
-        _titleBar.DoubleClick  += (_, _) => _owner.ToggleFullSize();
+        // Audio  🔊 / 🔇
+        _audioBtn = MakeIconButton("🔊", Color.Transparent);
+        _audioBtn.Font = new Font("Segoe UI Emoji", 9f);
+        _audioBtn.Click += (_, _) => ShowAudioMenu();
+
+        _titleBar.Controls.Add(_titleLabel);    // Fill — must be added first
+        _titleBar.Controls.Add(closeBtn);        // DockStyle.Right — rightmost
+        _titleBar.Controls.Add(actionsBtn);
+        _titleBar.Controls.Add(_streamBtn);
+        _titleBar.Controls.Add(_audioBtn);       // leftmost of the right-docked buttons
+
+        _titleBar.DoubleClick   += (_, _) => _owner.ToggleFullSize();
         _titleLabel.DoubleClick += (_, _) => _owner.ToggleFullSize();
-        _titleBar.MouseDown  += (_, e) => { if (e.Button == MouseButtons.Right) _contextMenu.Show(Cursor.Position); };
+        _titleBar.MouseDown     += (_, e) => { if (e.Button == MouseButtons.Right) _actionsMenu.Show(Cursor.Position); };
 
-        // Drag-to-move wiring (left button; threshold avoids breaking double-click)
         _titleBar.MouseDown   += TitleDragDown;
         _titleBar.MouseMove   += TitleDragMove;
         _titleBar.MouseUp     += TitleDragUp;
-        _titleLabel.MouseDown += TitleDragDown;   // label fills most of the bar
+        _titleLabel.MouseDown += TitleDragDown;
 
         Controls.Add(_titleBar);
     }
 
+    // ── Audio dropdown ────────────────────────────────────────────────────────
+
+    private void ShowAudioMenu()
+    {
+        var menu = new ContextMenuStrip();
+
+        var muteItem = new ToolStripMenuItem(_owner.IsMuted ? "Unmute" : "Mute");
+        muteItem.Click += (_, _) =>
+        {
+            _owner.ToggleMute();
+            RefreshAudioButton();
+        };
+        menu.Items.Add(muteItem);
+        menu.Items.Add(new ToolStripSeparator());
+
+        var volLabel = new ToolStripLabel($"Volume: {_owner.Volume}%")
+        {
+            Font = new Font("Segoe UI", 8f),
+        };
+        menu.Items.Add(volLabel);
+
+        var trackBar = new TrackBar
+        {
+            Minimum       = 0,
+            Maximum       = 200,
+            Value         = _owner.Volume,
+            TickFrequency = 50,
+            SmallChange   = 5,
+            LargeChange   = 20,
+            Width         = 170,
+        };
+        trackBar.ValueChanged += (_, _) =>
+        {
+            _owner.SetVolume(trackBar.Value);
+            volLabel.Text = $"Volume: {trackBar.Value}%";
+            RefreshAudioButton();
+        };
+        menu.Items.Add(new ToolStripControlHost(trackBar) { AutoSize = false, Size = new Size(170, trackBar.PreferredSize.Height) });
+
+        menu.Show(_audioBtn, new Point(0, _audioBtn.Height));
+    }
+
+    private void RefreshAudioButton()
+    {
+        if (_audioBtn != null)
+            _audioBtn.Text = _owner.IsMuted ? "🔇" : "🔊";
+    }
+
+    // ── Stream / profile dropdown ─────────────────────────────────────────────
+
+    private void ShowStreamMenu()
+    {
+        var menu = new ContextMenuStrip();
+
+        if (_profiles.Count == 0)
+        {
+            var loading = _profilesLoaded ? "No profiles found" : "Loading…";
+            menu.Items.Add(new ToolStripMenuItem(loading) { Enabled = false });
+        }
+        else
+        {
+            foreach (var p in _profiles)
+            {
+                var label = string.IsNullOrEmpty(p.Name) ? p.Token : p.Name;
+                if (p.Width > 0 && p.Height > 0) label += $"  {p.Width}×{p.Height}";
+                if (!string.IsNullOrEmpty(p.Encoding)) label += $"  {p.Encoding}";
+
+                var item = new ToolStripMenuItem(label)
+                {
+                    Checked = p.Token == _owner.Camera.SelectedProfileToken,
+                };
+                var token = p.Token;
+                item.Click += (_, _) => _owner.RequestProfileChange(token);
+                menu.Items.Add(item);
+            }
+        }
+
+        menu.Show(_streamBtn, new Point(0, _streamBtn.Height));
+    }
+
+    // ── Profile loading ───────────────────────────────────────────────────────
+
+    private async Task LoadProfilesAsync()
+    {
+        try
+        {
+            var profiles = (await _onvifService!.GetProfilesAsync(_owner.Camera)).ToList();
+            if (!IsHandleCreated || IsDisposed) return;
+            BeginInvoke(() => _profiles = profiles);
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "Could not load profiles for {Name}", _owner.Camera.DisplayName);
+        }
+    }
+
+    // ── Drag-to-move ──────────────────────────────────────────────────────────
+
     private void TitleDragDown(object? s, MouseEventArgs e)
     {
         if (e.Button != MouseButtons.Left) return;
-        _titleDragStart = Cursor.Position;
-        _titleDragging  = true;
-        _titleDragMoved = false;
-        _titleBar.Capture = true;   // all subsequent mouse events go to _titleBar
+        _titleDragStart   = Cursor.Position;
+        _titleDragging    = true;
+        _titleDragMoved   = false;
+        _titleBar.Capture = true;
     }
 
     private void TitleDragMove(object? s, MouseEventArgs e)
@@ -132,16 +243,18 @@ public class CameraPanelOverlay : Form
         int dx = cur.X - _titleDragStart.X;
         int dy = cur.Y - _titleDragStart.Y;
         if (!_titleDragMoved && Math.Abs(dx) <= 3 && Math.Abs(dy) <= 3) return;
-        _titleDragMoved = true;
+        _titleDragMoved   = true;
         MoveRequested?.Invoke(dx, dy);
-        _titleDragStart = cur;
+        _titleDragStart   = cur;
     }
 
     private void TitleDragUp(object? s, MouseEventArgs e)
     {
-        _titleDragging = false;
+        _titleDragging    = false;
         _titleBar.Capture = false;
     }
+
+    // ── Resize handles ────────────────────────────────────────────────────────
 
     private void BuildResizeHandles()
     {
@@ -158,14 +271,14 @@ public class CameraPanelOverlay : Form
         {
             var handle = new Panel { BackColor = Color.FromArgb(55, 55, 65), Cursor = cur };
 
-            Point start  = default;
+            Point     start      = default;
             Rectangle origBounds = default;
 
             handle.MouseDown += (_, e) =>
             {
                 if (e.Button != MouseButtons.Left) return;
-                start      = Cursor.Position;
-                origBounds = _owner.Bounds;
+                start          = Cursor.Position;
+                origBounds     = _owner.Bounds;
                 handle.Capture = true;
             };
             handle.MouseMove += (_, e) =>
@@ -205,7 +318,7 @@ public class CameraPanelOverlay : Form
                 w = E;
                 h = Math.Max(0, Height - TitleBarHeight - C);
             }
-            else // bottom only
+            else
             {
                 x = C; y = Height - E;
                 w = Math.Max(0, Width - C * 2);
@@ -216,48 +329,50 @@ public class CameraPanelOverlay : Form
         }
     }
 
+    // ── Status bar ────────────────────────────────────────────────────────────
+
     private void BuildStatusBar()
     {
-        // Small colored dot in bottom-right corner
         _statusDot = new PictureBox
         {
-            Width = 8,
-            Height = 8,
+            Width     = 8,
+            Height    = 8,
             BackColor = Color.Orange,
-            Cursor = Cursors.Default,
+            Cursor    = Cursors.Default,
         };
 
         _statusLabel = new Label
         {
-            AutoSize = true,
+            AutoSize  = true,
             ForeColor = Color.FromArgb(200, 200, 200),
             BackColor = Color.Transparent,
-            Font = new Font("Segoe UI", 7.5f),
-            Text = "Connecting…",
-            Cursor = Cursors.Default,
+            Font      = new Font("Segoe UI", 7.5f),
+            Text      = "Connecting…",
+            Cursor    = Cursors.Default,
         };
 
-        // Positioned in OnResize
         Controls.Add(_statusDot);
         Controls.Add(_statusLabel);
     }
+
+    // ── PTZ panel ─────────────────────────────────────────────────────────────
 
     private void BuildPtzPanel()
     {
         _ptzPanel = new Panel
         {
             BackColor = Color.FromArgb(180, 20, 20, 20),
-            Visible = _owner.Camera.PtzEnabled,
-            Size = new Size(100, 70),
+            Visible   = _owner.Camera.PtzEnabled,
+            Size      = new Size(100, 70),
         };
 
         (string text, float pan, float tilt, float zoom)[] defs =
         [
-            ("▲",  0,    0.5f, 0),
-            ("◄", -0.5f, 0,    0),
-            ("■",  0,    0,    0),   // stop
-            ("►",  0.5f, 0,    0),
-            ("▼",  0,   -0.5f, 0),
+            ("▲",  0f,    0.5f,  0f),
+            ("◄", -0.5f,  0f,    0f),
+            ("■",  0f,    0f,    0f),
+            ("►",  0.5f,  0f,    0f),
+            ("▼",  0f,   -0.5f,  0f),
         ];
 
         int col = 0, row = 0;
@@ -265,26 +380,27 @@ public class CameraPanelOverlay : Form
         {
             var btn = new Button
             {
-                Text = text,
-                Width = 26, Height = 26,
-                Left = col * 28 + 4,
-                Top = row * 28 + 4,
+                Text      = text,
+                Width     = 26,
+                Height    = 26,
+                Left      = col * 28 + 4,
+                Top       = row * 28 + 4,
                 FlatStyle = FlatStyle.Flat,
                 ForeColor = Color.White,
                 BackColor = Color.FromArgb(60, 60, 60),
-                Font = new Font("Segoe UI", 8f),
-                Cursor = Cursors.Hand,
+                Font      = new Font("Segoe UI", 8f),
+                Cursor    = Cursors.Hand,
             };
             btn.FlatAppearance.BorderColor = Color.FromArgb(80, 80, 80);
-            btn.FlatAppearance.BorderSize = 1;
+            btn.FlatAppearance.BorderSize  = 1;
 
             float p = pan, t = tilt, z = zoom;
             if (text == "■")
-                btn.Click += async (_, _) => await SafePtzAsync(() => _onvifService!.PtzStopAsync(_owner.Camera));
+                btn.Click     += async (_, _) => await SafePtzAsync(() => _onvifService!.PtzStopAsync(_owner.Camera));
             else
             {
                 btn.MouseDown += async (_, _) => await SafePtzAsync(() => _onvifService!.PtzMoveAsync(_owner.Camera, p, t, z));
-                btn.MouseUp += async (_, _) => await SafePtzAsync(() => _onvifService!.PtzStopAsync(_owner.Camera));
+                btn.MouseUp   += async (_, _) => await SafePtzAsync(() => _onvifService!.PtzStopAsync(_owner.Camera));
             }
 
             _ptzPanel.Controls.Add(btn);
@@ -300,8 +416,7 @@ public class CameraPanelOverlay : Form
     public void UpdateStatus(string text, StatusState state)
     {
         if (InvokeRequired) { BeginInvoke(() => UpdateStatus(text, state)); return; }
-        _currentState = state;
-        _statusLabel.Text = text;
+        _statusLabel.Text    = text;
         _statusDot.BackColor = state switch
         {
             StatusState.Live       => Color.FromArgb(50, 205, 50),
@@ -316,6 +431,11 @@ public class CameraPanelOverlay : Form
     {
         if (InvokeRequired) { BeginInvoke(() => SetOverlayVisible(visible)); return; }
         Visible = visible;
+        if (visible && !_profilesLoaded && _onvifService != null)
+        {
+            _profilesLoaded = true;
+            _ = LoadProfilesAsync();
+        }
     }
 
     public void SyncBounds()
@@ -327,7 +447,7 @@ public class CameraPanelOverlay : Form
         PositionResizeHandles();
     }
 
-    // ── Layout helpers ────────────────────────────────────────────────────────
+    // ── Layout ────────────────────────────────────────────────────────────────
 
     protected override void OnResize(EventArgs e)
     {
@@ -348,15 +468,36 @@ public class CameraPanelOverlay : Form
         if (_statusLabel == null || _statusDot == null) return;
         int dotX = Width - _statusDot.Width - 8;
         int dotY = Height - _statusDot.Height - 8;
-        _statusDot.Location = new Point(dotX, dotY);
+        _statusDot.Location   = new Point(dotX, dotY);
         _statusLabel.Location = new Point(dotX - _statusLabel.Width - 4, dotY - 1);
     }
 
-    // ── PTZ helper ────────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static Button MakeIconButton(string text, Color hoverColor)
+    {
+        var btn = new Button
+        {
+            Text      = text,
+            Width     = TitleBarHeight,
+            Height    = TitleBarHeight,
+            Dock      = DockStyle.Right,
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = Color.White,
+            BackColor = Color.Transparent,
+            Font      = new Font("Segoe UI", 9f),
+            Cursor    = Cursors.Hand,
+        };
+        btn.FlatAppearance.BorderSize             = 0;
+        btn.FlatAppearance.MouseOverBackColor      = hoverColor == Color.Transparent
+            ? Color.FromArgb(60, 60, 60)
+            : hoverColor;
+        return btn;
+    }
 
     private static async Task SafePtzAsync(Func<Task> action)
     {
-        try { await action(); }
+        try   { await action(); }
         catch (Exception ex) { Serilog.Log.Warning(ex, "PTZ command failed"); }
     }
 
@@ -369,28 +510,4 @@ public class CameraPanelOverlay : Form
     }
 
     protected override bool ShowWithoutActivation => true;
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
-    private static Button MakeIconButton(string text, Color hoverColor)
-    {
-        var btn = new Button
-        {
-            Text = text,
-            Width = TitleBarHeight,
-            Height = TitleBarHeight,
-            Dock = DockStyle.Right,
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = Color.White,
-            BackColor = Color.Transparent,
-            Font = new Font("Segoe UI", 9f),
-            Cursor = Cursors.Hand,
-        };
-        btn.FlatAppearance.BorderSize = 0;
-        btn.FlatAppearance.MouseOverBackColor = hoverColor == Color.Transparent
-            ? Color.FromArgb(60, 60, 60)
-            : hoverColor;
-        return btn;
-    }
 }
-
