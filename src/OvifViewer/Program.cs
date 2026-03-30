@@ -1,6 +1,6 @@
+using Avalonia;
 using LibVLCSharp.Shared;
 using Microsoft.Extensions.DependencyInjection;
-using OvifViewer.Forms;
 using OvifViewer.Services;
 using Serilog;
 
@@ -8,8 +8,9 @@ namespace OvifViewer;
 
 internal static class Program
 {
-    [STAThread]
-    static void Main()
+    public static ServiceProvider Services { get; private set; } = null!;
+
+    public static void Main(string[] args)
     {
         // ── Logging ───────────────────────────────────────────────────────────
         var logDir = Path.Combine(
@@ -26,33 +27,28 @@ internal static class Program
 
         Log.Information("OvifViewer starting");
 
-        // ── LibVLC (must init before Application.Run) ─────────────────────────
+        // ── LibVLC ────────────────────────────────────────────────────────────
         Core.Initialize();
         var libVlc = new LibVLC(enableDebugLogs: false);
 
         // ── DI container ──────────────────────────────────────────────────────
         var services = new ServiceCollection();
-
         services.AddSingleton(libVlc);
         services.AddSingleton<ISettingsService, SettingsService>();
         services.AddSingleton<IRtspStreamService>(sp =>
             new RtspStreamService(sp.GetRequiredService<LibVLC>()));
         services.AddSingleton<IOnvifService, OnvifService>();
         services.AddSingleton<IDiscoveryService, WsDiscoveryService>();
-        services.AddSingleton<MainForm>();
-
-        var provider = services.BuildServiceProvider();
+        Services = services.BuildServiceProvider();
 
         // ── Load settings ─────────────────────────────────────────────────────
-        var settings = provider.GetRequiredService<ISettingsService>();
+        var settings = Services.GetRequiredService<ISettingsService>();
         settings.Load();
 
-        // ── Run ───────────────────────────────────────────────────────────────
-        ApplicationConfiguration.Initialize();
-
+        // ── Run Avalonia ──────────────────────────────────────────────────────
         try
         {
-            Application.Run(provider.GetRequiredService<MainForm>());
+            BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
         }
         finally
         {
@@ -62,4 +58,9 @@ internal static class Program
             Log.CloseAndFlush();
         }
     }
+
+    public static AppBuilder BuildAvaloniaApp()
+        => AppBuilder.Configure<App>()
+            .UsePlatformDetect()
+            .LogToTrace();
 }

@@ -16,7 +16,8 @@
       "Bash(ilspycmd:*)",
       "Bash(dotnet tool:*)",
       "Bash(Get-Content \"C:/Users/mario/AppData/Roaming/OvifViewer/logs/app-20260323.log\" | Select-Object -Last 20)",
-      "Bash(powershell -Command \"\n\\\\$dll = 'D:/nvr/src/OvifViewer/bin/Debug/net9.0-windows/LibVLCSharp.dll'\n\\\\$bytes = [System.IO.File]::ReadAllBytes\\(\\\\$dll\\)\n\\\\$asm = [System.Reflection.Assembly]::Load\\(\\\\$bytes\\)\n\\\\$t = \\\\$asm.GetTypes\\(\\) | Where-Object { \\\\$_.Name -eq 'MediaPlayer' }\n\\\\$t.GetMembers\\(\\) | Where-Object { \\\\$_.Name -match 'olume|ute|udio' } | Select-Object Name, MemberType\n\" 2>&1)"
+      "Bash(powershell -Command \"\n\\\\$dll = 'D:/nvr/src/OvifViewer/bin/Debug/net9.0-windows/LibVLCSharp.dll'\n\\\\$bytes = [System.IO.File]::ReadAllBytes\\(\\\\$dll\\)\n\\\\$asm = [System.Reflection.Assembly]::Load\\(\\\\$bytes\\)\n\\\\$t = \\\\$asm.GetTypes\\(\\) | Where-Object { \\\\$_.Name -eq 'MediaPlayer' }\n\\\\$t.GetMembers\\(\\) | Where-Object { \\\\$_.Name -match 'olume|ute|udio' } | Select-Object Name, MemberType\n\" 2>&1)",
+      "Bash(xargs ls:*)"
     ]
   }
 }
